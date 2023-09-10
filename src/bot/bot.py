@@ -42,6 +42,13 @@ Happy Transcribing.
 """
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "unique_chat_count" not in context.bot_data:
+        context.bot_data["unique_chat_count"] = 1
+    else:
+        context.bot_data["unique_chat_count"] += 1
+    
+    print(f"New start. Unique chat count: {context.bot_data['unique_chat_count']}")
+
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=welcome_message
     )
@@ -59,17 +66,14 @@ def send_typing_action(func):
 
     return command_func
 
-def user_has_no_language():
-    pass
-
-def send_language_picker():
-    supported_languages = S2TT_TARGET_LANGUAGE_NAMES
+def send_language_picker(context):
+    supported_languages = ["English", "Italian", "Spanish"] + S2TT_TARGET_LANGUAGE_NAMES
     return
 
 
 async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if user_has_no_language():
-        send_language_picker()
+    if "language" not in context.user_data:
+        send_language_picker(context)
         return
 
     file_id = update.message.voice.file_id
