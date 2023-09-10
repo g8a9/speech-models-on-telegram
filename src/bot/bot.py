@@ -17,7 +17,8 @@ from telegram.ext import (
     PicklePersistence,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    CallbackQueryHandler
+    CallbackQueryHandler,
+    ReplyKeyboardMarkup
 )
 
 from ..seamlessM4T.lang_list import S2TT_TARGET_LANGUAGE_NAMES
@@ -50,7 +51,8 @@ def get_language_picker():
         [InlineKeyboardButton(language, callback_data=language)]
         for language in ["English", "Italian", "Spanish"] + S2TT_TARGET_LANGUAGE_NAMES
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = ReplyKeyboardMarkup(keyboard)
     return reply_markup
 
 
