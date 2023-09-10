@@ -14,7 +14,10 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
-    PicklePersistence
+    PicklePersistence,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    CallbackQueryHandler
 )
 
 from ..seamlessM4T.lang_list import S2TT_TARGET_LANGUAGE_NAMES
@@ -34,12 +37,22 @@ beam_endpoint = os.environ.get("BEAM_ENDPOINT")
 
 welcome_message="""
 Hi, this is Voice Bot. You can send or forward voice note to me: I will trascribe them into text. Your voice note can be in any language! 
-Before we get started, I need to know which language I should use: Send /language to choose.
+Before we get started, I need to know which language I should use. Pick one below or send /language to choose.
 
 Behind the scene, I use Meta's SeamlessM4T model.
 
 Happy Transcribing.
 """
+
+
+def get_language_picker():
+    keyboard = [
+        [InlineKeyboardButton(language, callback_data=language)]
+        for language in ["English", "Italian", "Spanish"] + S2TT_TARGET_LANGUAGE_NAMES
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    return reply_markup
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "unique_chat_count" not in context.bot_data:
@@ -47,11 +60,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.bot_data["unique_chat_count"] += 1
     
-    print(f"New start. Unique chat count: {context.bot_data['unique_chat_count']}")
+    logger.info(f"New start. Unique chat count: {context.bot_data['unique_chat_count']}")
 
+    reply_markup = get_language_picker()
     await context.bot.send_message(
-        chat_id=update.effective_chat.id, text=welcome_message
+        chat_id=update.effective_chat.id, text=welcome_message, reply_markup=reply_markup
     )
+
+
+async def language_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Parses the CallbackQuery and updates the message text."""
+    query = update.callback_query
+
+    # CallbackQueries need to be answered, even if no notification to the user is needed
+    # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
+    await query.answer()
+    context.user_data["language"] = query.data
+    await query.edit_message_text(text=f"Selected language: {query.data}")
 
 
 def send_typing_action(func):
@@ -66,15 +91,14 @@ def send_typing_action(func):
 
     return command_func
 
-def send_language_picker(context):
-    supported_languages = ["English", "Italian", "Spanish"] + S2TT_TARGET_LANGUAGE_NAMES
-    return
-
-
 async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "language" not in context.user_data:
-        send_language_picker(context)
-        return
+        reply_markup = get_language_picker()
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Please, first select a language. You can always change it with /language",
+            reply_markup=reply_markup
+        )
 
     file_id = update.message.voice.file_id
     new_file = await context.bot.get_file(file_id)
@@ -117,6 +141,7 @@ if __name__ == "__main__":
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("language", choose_language))
+    application.add_handler(CallbackQueryHandler(language_button_pressed))
     application.add_handler(MessageHandler(filters.ALL, get_audio_transcript))
 
     application.run_polling()
