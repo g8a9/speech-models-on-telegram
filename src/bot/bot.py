@@ -14,7 +14,9 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    PicklePersistence
 )
+
 from ..seamlessM4T.lang_list import S2TT_TARGET_LANGUAGE_NAMES
 
 load_dotenv()
@@ -57,8 +59,19 @@ def send_typing_action(func):
 
     return command_func
 
+def user_has_no_language():
+    pass
+
+def send_language_picker():
+    supported_languages = S2TT_TARGET_LANGUAGE_NAMES
+    return
+
 
 async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if user_has_no_language():
+        send_language_picker()
+        return
+
     file_id = update.message.voice.file_id
     new_file = await context.bot.get_file(file_id)
     byte_data = await new_file.download_as_bytearray()
@@ -89,15 +102,17 @@ async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text_output)
 
+async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    send_language_picker()
 
 if __name__ == "__main__":
     TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    application = ApplicationBuilder().token(TOKEN).build()
+    persistence_data = PicklePersistence(filepath='persistence.pkl')
 
-    start_handler = CommandHandler("start", start)
-    application.add_handler(start_handler)
+    application = ApplicationBuilder().token(TOKEN).persistence(persistence=persistence_data).build()
 
-    audio_handler = MessageHandler(filters.ALL, get_audio_transcript)
-    application.add_handler(audio_handler)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("language", choose_language))
+    application.add_handler(MessageHandler(filters.ALL, get_audio_transcript))
 
     application.run_polling()
