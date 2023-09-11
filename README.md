@@ -1,6 +1,6 @@
 # speech-models-on-telegram
 
-Code for serving Meta's SeamlessM4T via Beam and for [Voice Bot](https://telegram.me/the_whisper_bot), a telegram bot to transform your voice notes into text.  
+Code for serving Meta's SeamlessM4T via [Beam](https://www.beam.cloud/) and for running [Voice Bot](https://telegram.me/the_whisper_bot), a telegram bot to transform your voice notes into text.  
 
 ### Components
 
@@ -21,5 +21,9 @@ My ideal use case for such a client is a Telegram Bot.
 
 ### Limitations
 
-- This is a side project, code is not nice and tidy
 - We trim voice notes to a maximum of 120 seconds
+- App gets suspended if not invoked for longer that 2 minutes. If that happens, then you'll cold start it and have to wait ~30 seconds to get your transcript.
+- This is a side project, so
+    - code is not nice and tidy
+    - I can't guarantee 24/7 assistance
+    - I can't guarantee it'll be up forever
