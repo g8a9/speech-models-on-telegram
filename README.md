@@ -21,7 +21,7 @@ My ideal use case for such a client is a Telegram Bot.
 
 ### Limitations
 
-- We trim voice notes to a maximum of 120 seconds
+- We trim voice notes to a maximum of 60 seconds
 - App gets suspended if not invoked for longer that 2 minutes. If that happens, then you'll cold start it and have to wait ~30 seconds to get your transcript.
 - This is a side project, so
     - code is not nice and tidy

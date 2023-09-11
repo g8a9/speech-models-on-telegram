@@ -12,7 +12,7 @@ from lang_list import (
 from seamless_communication.models.inference import Translator
 
 AUDIO_SAMPLE_RATE = 16000.0
-MAX_INPUT_AUDIO_LENGTH = 120  # in seconds
+MAX_INPUT_AUDIO_LENGTH = 60  # in seconds
 
 app = App(
     name="seamlessM4T",

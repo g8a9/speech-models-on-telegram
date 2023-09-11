@@ -46,6 +46,9 @@ Behind the scene, I use Meta's SeamlessM4T model.
 
 Happy Transcribing.
 """
+error_message = """
+There was an error when trascribing your voice note. It should be temporary, so try again in while :)
+"""
 
 
 def get_language_picker():
@@ -139,7 +142,8 @@ async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYP
         json=data,
     )
 
-    text_output = r.json()["transcript"]
+    response = r.json()
+    text_output = response.get("transcript", error_message)
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text_output)
 
