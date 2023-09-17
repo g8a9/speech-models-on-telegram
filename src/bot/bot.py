@@ -68,8 +68,9 @@ async def language_callback_query(
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
     await query.answer()
-    context.user_data["language"] = query.data
-    await query.edit_message_text(text=f"Selected language: {query.data}")
+    choice = query.data.split("_")[-1]
+    context.user_data["language"] = choice
+    await query.edit_message_text(text=f"Selected language: {choice}")
 
 async def model_callback_query(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -80,9 +81,9 @@ async def model_callback_query(
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
     await query.answer()
-    context.user_data["model"] = query.data
-    await query.edit_message_text(text=f"Selected model: {query.data}")
-
+    choice = query.data.split("_")[-1]
+    context.user_data["model"] = choice 
+    await query.edit_message_text(text=f"Selected model: {choice}")
 
 ###
 # Commands
@@ -119,6 +120,14 @@ async def choose_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text="Select a model. You can always change it with /model",
         reply_markup=reply_markup,
     )
+
+async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = f"Target language: {context.user_data['language']}\nModel: {context.user_data.get('model', 'SeamlessM4T')}"
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+    ) 
 
 ###
 # Misc
@@ -195,6 +204,8 @@ if __name__ == "__main__":
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("language", choose_language))
+    application.add_handler(CommandHandler("model", choose_model))
+    application.add_handler(CommandHandler("config", show_config))
     application.add_handler(CallbackQueryHandler(language_callback_query, pattern="language"))
     application.add_handler(CallbackQueryHandler(model_callback_query, pattern="model"))
     application.add_handler(MessageHandler(filters.ALL, get_audio_transcript))
