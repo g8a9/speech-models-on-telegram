@@ -1,5 +1,0 @@
-# Requirements for local testing
-transformers
-beam-sdk
-git+https://github.com/facebookresearch/seamless_communication.git
-torchaudio
