@@ -3,13 +3,11 @@ import tempfile
 from subprocess import run
 from tempfile import NamedTemporaryFile
 
-import whisper
 import torch
 import torchaudio
+import whisper
 from beam import App, Image, Runtime, Volume, VolumeType
-from lang_list import (
-    LANGUAGE_NAME_TO_CODE,
-)
+from lang_list import LANGUAGE_NAME_TO_CODE
 
 AUDIO_SAMPLE_RATE = 16000.0
 MAX_INPUT_AUDIO_LENGTH = 120  # in seconds
@@ -25,7 +23,7 @@ app = App(
             commands=["apt-get update && apt-get install -y ffmpeg"],
         ),
     ),
-    volumes=[Volume(path="./cache", name="cache_whisper", volume_type=VolumeType.Persistent)],
+    volumes=[Volume(path="./cache", name="cache")],
 )
 
 LANG_TO_ID = {v: k for k, v in whisper.tokenizer.LANGUAGES}

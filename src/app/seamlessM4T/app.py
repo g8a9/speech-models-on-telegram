@@ -6,9 +6,7 @@ from tempfile import NamedTemporaryFile
 import torch
 import torchaudio
 from beam import App, Image, Runtime, Volume, VolumeType
-from lang_list import (
-    LANGUAGE_NAME_TO_CODE,
-)
+from lang_list import LANGUAGE_NAME_TO_CODE
 from seamless_communication.models.inference import Translator
 
 AUDIO_SAMPLE_RATE = 16000.0
@@ -24,13 +22,10 @@ app = App(
             python_packages=[
                 "git+https://github.com/facebookresearch/seamless_communication.git"
             ],
-            commands=[
-                # "apt-get update && apt-get install -y autoconf autogen automake build-essential libasound2-dev libflac-dev libogg-dev libtool libvorbis-dev libopus-dev libmp3lame-dev libmpg123-dev pkg-config python",
-                # "git clone https://github.com/libsndfile/libsndfile.git && cd libsndfile && autoreconf -vif && ./configure --enable-werror && make && make check",
-            ],
+            commands=[],
         ),
     ),
-    volumes=[Volume(path="./cache", name="cache", volume_type=VolumeType.Persistent)],
+    volumes=[Volume(path="./cache", name="cache")],
 )
 
 
