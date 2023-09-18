@@ -1,16 +1,14 @@
 import base64
 import tempfile
-from subprocess import run
-from tempfile import NamedTemporaryFile
 
 import torch
 import torchaudio
 import whisper
 from beam import App, Image, Runtime, Volume, VolumeType
-from lang_list import LANGUAGE_NAME_TO_CODE
+from whisper.tokenizer import TO_LANGUAGE_CODE
 
 AUDIO_SAMPLE_RATE = 16000.0
-MAX_INPUT_AUDIO_LENGTH = 120  # in seconds
+MAX_INPUT_AUDIO_LENGTH = 240  # in seconds
 
 app = App(
     name="whisper",
@@ -19,20 +17,17 @@ app = App(
         memory="8Gi",
         gpu="T4",
         image=Image(
-            python_packages=["git+https://github.com/openai/whisper.git"],
+            python_packages=["torchaudio", "git+https://github.com/openai/whisper.git"],
             commands=["apt-get update && apt-get install -y ffmpeg"],
         ),
     ),
     volumes=[Volume(path="./cache", name="cache")],
 )
 
-LANG_TO_ID = {v: k for k, v in whisper.tokenizer.LANGUAGES}
-
-
 def load_model():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = whisper.load_model(
-        "medium", device=device, download_root="./cache"
+        "large", device=device, download_root="./cache"
     )
     return model
 
@@ -45,8 +40,9 @@ def transcribe_audio(**inputs):
     target_language = inputs.get("target_language", "Italian").lower()
     task_name = inputs.get("task_name", "transcribe")
     
-    if target_language not in LANG_TO_ID:
+    if target_language not in TO_LANGUAGE_CODE:
         return {"transcript": f"Target language {target_language} not supported."}
+    target_lang_code = TO_LANGUAGE_CODE[target_language]
 
     # source_language_code = (
     # LANGUAGE_NAME_TO_CODE[source_language] if source_language else None
@@ -83,7 +79,8 @@ def transcribe_audio(**inputs):
 
     result = model.transcribe(
         f2.name,
-        decode_options={"task": task_name, "language": target_language}
+        task=task_name,
+        language=target_lang_code
     )
 
     f2.close()
