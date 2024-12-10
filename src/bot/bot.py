@@ -7,12 +7,25 @@ import requests
 from dotenv import load_dotenv
 from lang_list import S2TT_TARGET_LANGUAGE_NAMES
 from requests.auth import HTTPBasicAuth
-from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
-                      ReplyKeyboardMarkup, Update)
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ChatAction
-from telegram.ext import (ApplicationBuilder, CallbackQueryHandler,
-                          CommandHandler, ContextTypes, MessageHandler,
-                          PicklePersistence, filters)
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    PicklePersistence,
+    filters,
+)
+
+from fireworks.client.audio import AudioInference
+
 
 load_dotenv()
 
@@ -40,6 +53,7 @@ error_message = """
 There was an error when trascribing your voice note. It should be temporary, so try again in while :)
 """
 
+
 ###
 # Keyboard Markups and Callbacks
 ###
@@ -51,13 +65,15 @@ def get_language_picker():
     reply_markup = InlineKeyboardMarkup(keyboard)
     return reply_markup
 
+
 def get_model_picker():
     keyboard = [
         [InlineKeyboardButton(model, callback_data=f"model_{model}")]
-        for model in ["SeamlessM4T", "Whisper"]
+        for model in ["Whisper v3"]  #  ["SeamlessM4T", "Whisper"]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     return reply_markup
+
 
 async def language_callback_query(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -72,6 +88,7 @@ async def language_callback_query(
     context.user_data["language"] = choice
     await query.edit_message_text(text=f"Selected language: {choice}")
 
+
 async def model_callback_query(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -82,8 +99,9 @@ async def model_callback_query(
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
     await query.answer()
     choice = query.data.split("_")[-1]
-    context.user_data["model"] = choice 
+    context.user_data["model"] = choice
     await query.edit_message_text(text=f"Selected model: {choice}")
+
 
 ###
 # Commands
@@ -105,6 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
     )
 
+
 async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = get_language_picker()
     await context.bot.send_message(
@@ -112,6 +131,7 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text="Select a language. You can always change it with /language",
         reply_markup=reply_markup,
     )
+
 
 async def choose_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = get_model_picker()
@@ -121,13 +141,15 @@ async def choose_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
     )
 
+
 async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"Target language: {context.user_data['language']}\nModel: {context.user_data.get('model', 'SeamlessM4T')}"
-    
+
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=text,
-    ) 
+    )
+
 
 ###
 # Misc
@@ -155,38 +177,48 @@ async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    user_model_choice = context.user_data.get("model", "Whisper v3")
+
     file_id = update.message.voice.file_id
     new_file = await context.bot.get_file(file_id)
     byte_data = await new_file.download_as_bytearray()
 
+    # Send to Beam API
     encode_audio = base64.b64encode(byte_data).decode("UTF-8")
-
-    data = {
-        "audio_file": encode_audio,
-        "target_language": context.user_data["language"],
-    }
-    headers = {
-        "Accept": "*/*",
-        "Connection": "keep-alive",
-        "Content-Type": "application/json",
-    }
 
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action=ChatAction.TYPING
     )
-
-    user_model_choice = context.user_data.get("model", "SeamlessM4T")
-    endpoint = beam_sm4t_endpoint if user_model_choice == "SeamlessM4T" else beam_whisper_endpoint
-
-    r = requests.post(
-        endpoint,
-        auth=HTTPBasicAuth(client_id, client_secret),
-        headers=headers,
-        json=data,
+    # data = {
+    #     "audio_file": encode_audio,
+    #     "target_language": context.user_data["language"],
+    # }
+    # headers = {
+    #     "Accept": "*/*",
+    #     "Connection": "keep-alive",
+    #     "Content-Type": "application/json",
+    # }
+    # endpoint = (
+    #     beam_sm4t_endpoint
+    #     if user_model_choice == "SeamlessM4T"
+    #     else beam_whisper_endpoint
+    # )
+    # r = requests.post(
+    #     endpoint,
+    #     auth=HTTPBasicAuth(client_id, client_secret),
+    #     headers=headers,
+    #     json=data,
+    # )
+    client = AudioInference(
+        model="whisper-v3",
+        base_url="https://audio-prod.us-virginia-1.direct.fireworks.ai",
+        api_key=os.environ.get("FIREWORKS_API_KEY"),
     )
 
-    response = r.json()
-    text_output = response.get("transcript", error_message)
+    # response = r.json()
+    # text_output = response.get("transcript", error_message)
+    response = await client.transcribe_async(audio=encode_audio)
+    text_output = response.text
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text_output)
 
@@ -206,7 +238,9 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("language", choose_language))
     application.add_handler(CommandHandler("model", choose_model))
     application.add_handler(CommandHandler("config", show_config))
-    application.add_handler(CallbackQueryHandler(language_callback_query, pattern="language"))
+    application.add_handler(
+        CallbackQueryHandler(language_callback_query, pattern="language")
+    )
     application.add_handler(CallbackQueryHandler(model_callback_query, pattern="model"))
     application.add_handler(MessageHandler(filters.ALL, get_audio_transcript))
 
