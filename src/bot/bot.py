@@ -25,9 +25,11 @@ from telegram.ext import (
 )
 
 from fireworks.client.audio import AudioInference
+from io import BytesIO
 
 
 load_dotenv()
+from gemini import GeminiHelper
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -69,7 +71,7 @@ def get_language_picker():
 def get_model_picker():
     keyboard = [
         [InlineKeyboardButton(model, callback_data=f"model_{model}")]
-        for model in ["Whisper v3"]  #  ["SeamlessM4T", "Whisper"]
+        for model in ["Whisper v3", "Whisper v3 Turbo"]  #  ["SeamlessM4T", "Whisper"]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     return reply_markup
@@ -142,12 +144,54 @@ async def choose_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def toggle_clean_transcript(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    current_clean_transcript = context.user_data.get("clean_transcript", False)
+    context.user_data["clean_transcript"] = not current_clean_transcript
+    emoji = "✅" if context.user_data["clean_transcript"] else "❌"
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"Clean transcript: {emoji}",
+    )
+
+
+async def toggle_summarize_transcript(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    current_summarize_transcript = context.user_data.get("summarize_transcript", False)
+    context.user_data["summarize_transcript"] = not current_summarize_transcript
+    emoji = "✅" if context.user_data["summarize_transcript"] else "❌"
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"Summarize transcript: {emoji}",
+    )
+
+
 async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = f"Target language: {context.user_data['language']}\nModel: {context.user_data.get('model', 'SeamlessM4T')}"
+    clean_emoji = "✅" if context.user_data.get("clean_transcript", False) else "❌"
+    summarize_emoji = (
+        "✅" if context.user_data.get("summarize_transcript", False) else "❌"
+    )
+    text = f"""
+Target language: {context.user_data['language']}
+Model: {context.user_data.get('model', 'SeamlessM4T')}
+Clean transcript: {clean_emoji}
+Summarize transcript: {summarize_emoji}"""
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=text,
+    )
+
+
+def get_clean_prompt(transcript: str, do_summarize: bool):
+    return (
+        f"""
+Post-process this transcript of an audio recording. Clean it, add punctuation where needed, and make it more polished but do not change the meaning. Preserve the source language. Answer only with the post-processed text.
+Transcript: {transcript}"""
+        if not do_summarize
+        else f"""
+Post-process this transcript of an audio recording. Clean it, add punctuation where needed, and create a shorter, more concise version, but do not change the meaning. Preserve the source language. Answer only with the post-processed text.
+Transcript: {transcript}"""
     )
 
 
@@ -177,18 +221,50 @@ async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    user_model_choice = context.user_data.get("model", "Whisper v3")
-
     file_id = update.message.voice.file_id
     new_file = await context.bot.get_file(file_id)
     byte_data = await new_file.download_as_bytearray()
 
-    # Send to Beam API
-    encode_audio = base64.b64encode(byte_data).decode("UTF-8")
-
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action=ChatAction.TYPING
     )
+
+    if context.user_data["model"] == "Whisper v3":
+        model = "whisper-v3"
+        base_url = "https://audio-prod.us-virginia-1.direct.fireworks.ai"
+    else:
+        model = "whisper-v3-turbo"
+        base_url = "https://audio-turbo.us-virginia-1.direct.fireworks.ai"
+
+    logger.info(f"Using model: {model}")
+    client = AudioInference(
+        model=model,
+        base_url=base_url,
+        api_key=os.environ.get("FIREWORKS_API_KEY"),
+    )
+
+    # # Send to Beam API
+    # encode_audio = base64.b64encode(byte_data).decode("UTF-8")
+    with BytesIO(byte_data) as audio_stream:
+        response = await client.transcribe_async(
+            audio=audio_stream, language=context.user_data["language"]
+        )
+
+        transcript = response.text
+
+        do_clean_transcript = context.user_data.get("clean_transcript", False)
+        do_summarize = context.user_data.get("summarize_transcript", False)
+
+        if do_clean_transcript or do_summarize:
+
+            client = GeminiHelper(model_name="gemini-1.5-flash")
+            prompt = get_clean_prompt(transcript, do_summarize=do_summarize)
+
+            transcript = client(
+                prompt=prompt,
+                max_new_tokens=512,
+            )
+
     # data = {
     #     "audio_file": encode_audio,
     #     "target_language": context.user_data["language"],
@@ -209,18 +285,11 @@ async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYP
     #     headers=headers,
     #     json=data,
     # )
-    client = AudioInference(
-        model="whisper-v3",
-        base_url="https://audio-prod.us-virginia-1.direct.fireworks.ai",
-        api_key=os.environ.get("FIREWORKS_API_KEY"),
-    )
 
     # response = r.json()
     # text_output = response.get("transcript", error_message)
-    response = await client.transcribe_async(audio=encode_audio)
-    text_output = response.text
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=text_output)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=transcript)
 
 
 if __name__ == "__main__":
@@ -238,6 +307,10 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("language", choose_language))
     application.add_handler(CommandHandler("model", choose_model))
     application.add_handler(CommandHandler("config", show_config))
+    application.add_handler(CommandHandler("toggle_clean", toggle_clean_transcript))
+    application.add_handler(
+        CommandHandler("toggle_summary", toggle_summarize_transcript)
+    )
     application.add_handler(
         CallbackQueryHandler(language_callback_query, pattern="language")
     )
