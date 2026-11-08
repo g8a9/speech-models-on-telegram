@@ -257,7 +257,7 @@ async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYP
 
         if do_clean_transcript or do_summarize:
 
-            client = GeminiHelper(model_name="gemini-1.5-flash")
+            client = GeminiHelper(model_name="gemini-2.0-flash-001")
             prompt = get_clean_prompt(transcript, do_summarize=do_summarize)
 
             transcript = client(

@@ -1,3 +1,5 @@
 python-telegram-bot
 python-dotenv
 requests
+fireworks
+tenacity
