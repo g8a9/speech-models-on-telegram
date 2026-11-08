@@ -1,43 +1,72 @@
-import logging
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_random_exponential,
-    RetryError,
-)
-from google import genai
-from google.genai import types
+import base64
 import os
+from typing import Optional
 
-logger = logging.getLogger(__name__)
+from google import genai
+from tenacity import retry, stop_after_attempt, wait_random_exponential
+
+TRANSCRIBE_MODEL = "gemini-3.5-transcribe"
+SUMMARY_MODEL = "gemini-3.8-flash"
+
+SUMMARY_PROMPT = """\
+Listen to this audio recording and write a concise summary of what is said.
+Preserve the language of the recording and do not translate it.
+Answer only with the summary."""
 
 
-class GeminiHelper:
-    def __init__(self, model_name: str):
-        self.model_name = model_name
+class GeminiClient:
+    """Thin wrapper around the Gemini API for transcription and summarization."""
+
+    def __init__(self):
         self.client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
 
     @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(2))
-    def __call__(self, prompt, **generation_kwargs):
-        """Process a single image and prompt."""
+    def transcribe(
+        self, audio_bytes: bytes, mime_type: str, language_code: Optional[str] = None
+    ):
+        """Transcribe audio to text with smart transcription (cleaned up and formatted).
 
-        # img = PIL.Image.open(image_path)
+        If `language_code` is None the model detects the language automatically.
+        """
+        transcription_config = {
+            "mode": "smart",
+            "language_codes": [language_code] if language_code else [],
+        }
 
-        prompt = prompt.strip("\n")
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                max_output_tokens=generation_kwargs.get("max_new_tokens", 256)
-            ),
+        interaction = self.client.interactions.create(
+            model=TRANSCRIBE_MODEL,
+            input=[self._audio_content(audio_bytes, mime_type)],
+            generation_config={"transcription_config": transcription_config},
         )
 
-        finish_reason = response.candidates[0].finish_reason
+        return interaction.output_text
 
-        text = (
-            response.text
-            if finish_reason == types.FinishReason.STOP
-            else str(finish_reason)
+    @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(2))
+    def transcribe_and_summarize(
+        self, audio_bytes: bytes, mime_type: str, language_name: Optional[str] = None
+    ):
+        """Transcribe and summarize audio in a single pass."""
+        prompt = SUMMARY_PROMPT
+        if language_name:
+            prompt = (
+                f"{prompt}\nThe recording is in {language_name}. "
+                "Write the summary in that language."
+            )
+
+        interaction = self.client.interactions.create(
+            model=SUMMARY_MODEL,
+            input=[
+                {"type": "text", "text": prompt},
+                self._audio_content(audio_bytes, mime_type),
+            ],
         )
 
-        return text
+        return interaction.output_text
+
+    @staticmethod
+    def _audio_content(audio_bytes: bytes, mime_type: str) -> dict:
+        return {
+            "type": "audio",
+            "data": base64.b64encode(audio_bytes).decode("utf-8"),
+            "mime_type": mime_type,
+        }

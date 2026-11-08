@@ -1,18 +1,10 @@
-import base64
+import asyncio
 import logging
 import os
-from functools import wraps
+from typing import Optional
 
-import requests
 from dotenv import load_dotenv
-from lang_list import S2TT_TARGET_LANGUAGE_NAMES
-from requests.auth import HTTPBasicAuth
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    Update,
-)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
@@ -24,12 +16,10 @@ from telegram.ext import (
     filters,
 )
 
-from fireworks.client.audio import AudioInference
-from io import BytesIO
-
-
 load_dotenv()
-from gemini import GeminiHelper
+
+from .gemini import GeminiClient
+from .lang_list import LANGUAGE_CODE_TO_NAME, LANGUAGE_NAME_TO_CODE
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -37,44 +27,85 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-SAMPLE_RATE = 16000
-client_id = os.environ.get("CLIENT_ID")
-client_secret = os.environ.get("CLIENT_SECRET")
-beam_sm4t_endpoint = os.environ.get("BEAM_SM4T_ENDPOINT")
-beam_whisper_endpoint = os.environ.get("BEAM_WHISPER_ENDPOINT")
+MODE_TRANSCRIBE = "transcribe"
+MODE_SUMMARIZE = "summarize"
+MODE_LABELS = {
+    MODE_TRANSCRIBE: "Transcribe",
+    MODE_SUMMARIZE: "Summarize",
+}
+AUTO_LANGUAGE = "auto"
+LANGUAGES_PER_ROW = 3
+
+_gemini: Optional[GeminiClient] = None
+
+
+def get_gemini() -> GeminiClient:
+    """Create the Gemini client on first use, so importing the module needs no API key."""
+    global _gemini
+    if _gemini is None:
+        _gemini = GeminiClient()
+    return _gemini
 
 welcome_message = """
-Hi, this is Voice Bot. You can send or forward voice note to me: I will trascribe them into text. Your voice note can be in any language! 
-Before we get started, I need to know which language I should use. Pick one below or send /language to choose.
+Hi, this is Voice Bot. Send or forward me a voice note and I will turn it into text. Your voice note can be in any language: I detect it automatically.
 
-Behind the scene, I use Meta's SeamlessM4T model.
+Choose what you want:
+- Transcribe: a clean, readable transcript.
+- Summarize: a concise summary of what was said.
 
-Happy Transcribing.
+Use /mode to switch, /language to force a specific language, and /config to see your settings.
 """
+
 error_message = """
-There was an error when trascribing your voice note. It should be temporary, so try again in while :)
+There was an error while processing your voice note. It should be temporary, so try again in a while :)
 """
 
 
 ###
 # Keyboard Markups and Callbacks
 ###
+def get_mode_picker():
+    keyboard = [
+        [
+            InlineKeyboardButton(label, callback_data=f"mode_{mode}")
+            for mode, label in MODE_LABELS.items()
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 def get_language_picker():
-    keyboard = [
-        [InlineKeyboardButton(language, callback_data=f"language_{language}")]
-        for language in ["English", "Italian", "Spanish"] + S2TT_TARGET_LANGUAGE_NAMES
+    buttons = [
+        InlineKeyboardButton(
+            "Auto-detect (default)", callback_data=f"language_{AUTO_LANGUAGE}"
+        )
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    return reply_markup
+    buttons += [
+        InlineKeyboardButton(name, callback_data=f"language_{code}")
+        for name, code in LANGUAGE_NAME_TO_CODE.items()
+    ]
+    keyboard = [
+        buttons[i : i + LANGUAGES_PER_ROW]
+        for i in range(0, len(buttons), LANGUAGES_PER_ROW)
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 
-def get_model_picker():
-    keyboard = [
-        [InlineKeyboardButton(model, callback_data=f"model_{model}")]
-        for model in ["Whisper v3", "Whisper v3 Turbo"]  #  ["SeamlessM4T", "Whisper"]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    return reply_markup
+async def mode_callback_query(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Parses the CallbackQuery and updates the message text."""
+    query = update.callback_query
+
+    # CallbackQueries need to be answered, even if no notification to the user is needed
+    # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
+    await query.answer()
+    choice = query.data.removeprefix("mode_")
+    if choice not in MODE_LABELS:
+        return
+
+    context.user_data["mode"] = choice
+    await query.edit_message_text(text=f"Selected mode: {MODE_LABELS[choice]}")
 
 
 async def language_callback_query(
@@ -86,23 +117,34 @@ async def language_callback_query(
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
     await query.answer()
-    choice = query.data.split("_")[-1]
+    choice = query.data.removeprefix("language_")
+
+    if choice == AUTO_LANGUAGE:
+        context.user_data.pop("language", None)
+        await query.edit_message_text(text="Selected language: Auto-detect")
+        return
+
+    if choice not in LANGUAGE_CODE_TO_NAME:
+        return
+
     context.user_data["language"] = choice
-    await query.edit_message_text(text=f"Selected language: {choice}")
+    await query.edit_message_text(
+        text=f"Selected language: {LANGUAGE_CODE_TO_NAME[choice]}"
+    )
 
 
-async def model_callback_query(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Parses the CallbackQuery and updates the message text."""
-    query = update.callback_query
+###
+# User preferences
+###
+def get_mode(context: ContextTypes.DEFAULT_TYPE) -> str:
+    mode = context.user_data.get("mode", MODE_TRANSCRIBE)
+    return mode if mode in MODE_LABELS else MODE_TRANSCRIBE
 
-    # CallbackQueries need to be answered, even if no notification to the user is needed
-    # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
-    await query.answer()
-    choice = query.data.split("_")[-1]
-    context.user_data["model"] = choice
-    await query.edit_message_text(text=f"Selected model: {choice}")
+
+def get_forced_language(context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Return the language code the user forced, or None for auto-detection."""
+    code = context.user_data.get("language")
+    return code if code in LANGUAGE_CODE_TO_NAME else None
 
 
 ###
@@ -118,203 +160,111 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"New start. Unique chat count: {context.bot_data['unique_chat_count']}"
     )
 
-    reply_markup = get_language_picker()
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=welcome_message,
-        reply_markup=reply_markup,
+        reply_markup=get_mode_picker(),
+    )
+
+
+async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="Select a mode. You can always change it with /mode",
+        reply_markup=get_mode_picker(),
     )
 
 
 async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply_markup = get_language_picker()
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="Select a language. You can always change it with /language",
-        reply_markup=reply_markup,
-    )
-
-
-async def choose_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply_markup = get_model_picker()
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Select a model. You can always change it with /model",
-        reply_markup=reply_markup,
-    )
-
-
-async def toggle_clean_transcript(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    current_clean_transcript = context.user_data.get("clean_transcript", False)
-    context.user_data["clean_transcript"] = not current_clean_transcript
-    emoji = "✅" if context.user_data["clean_transcript"] else "❌"
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"Clean transcript: {emoji}",
-    )
-
-
-async def toggle_summarize_transcript(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
-    current_summarize_transcript = context.user_data.get("summarize_transcript", False)
-    context.user_data["summarize_transcript"] = not current_summarize_transcript
-    emoji = "✅" if context.user_data["summarize_transcript"] else "❌"
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"Summarize transcript: {emoji}",
+        text=(
+            "Select a language, or keep auto-detect to let the model understand it. "
+            "You can always change it with /language"
+        ),
+        reply_markup=get_language_picker(),
     )
 
 
 async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    clean_emoji = "✅" if context.user_data.get("clean_transcript", False) else "❌"
-    summarize_emoji = (
-        "✅" if context.user_data.get("summarize_transcript", False) else "❌"
-    )
-    text = f"""
-Target language: {context.user_data['language']}
-Model: {context.user_data.get('model', 'SeamlessM4T')}
-Clean transcript: {clean_emoji}
-Summarize transcript: {summarize_emoji}"""
+    mode = get_mode(context)
+    code = get_forced_language(context)
+    language = LANGUAGE_CODE_TO_NAME[code] if code else "Auto-detect"
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=text,
-    )
-
-
-def get_clean_prompt(transcript: str, do_summarize: bool):
-    return (
-        f"""
-Post-process this transcript of an audio recording. Clean it, add punctuation where needed, and make it more polished but do not change the meaning. Preserve the source language. Answer only with the post-processed text.
-Transcript: {transcript}"""
-        if not do_summarize
-        else f"""
-Post-process this transcript of an audio recording. Clean it, add punctuation where needed, and create a shorter, more concise version, but do not change the meaning. Preserve the source language. Answer only with the post-processed text.
-Transcript: {transcript}"""
+        text=f"Mode: {MODE_LABELS[mode]}\nLanguage: {language}",
     )
 
 
 ###
-# Misc
+# Voice notes
 ###
-def send_typing_action(func):
-    """Sends typing action while processing func command."""
-
-    @wraps(func)
-    async def command_func(update, context, *args, **kwargs):
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id, action=ChatAction.TYPING
-        )
-        await func(update, context, *args, **kwargs)
-
-    return command_func
-
-
-async def get_audio_transcript(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "language" not in context.user_data:
-        reply_markup = get_language_picker()
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Please, first select a language. You can always change it with /language",
-            reply_markup=reply_markup,
-        )
-        return
-
-    file_id = update.message.voice.file_id
-    new_file = await context.bot.get_file(file_id)
-    byte_data = await new_file.download_as_bytearray()
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    voice = update.message.voice
+    new_file = await context.bot.get_file(voice.file_id)
+    audio_bytes = bytes(await new_file.download_as_bytearray())
+    mime_type = voice.mime_type or "audio/ogg"
 
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action=ChatAction.TYPING
     )
 
-    if context.user_data["model"] == "Whisper v3":
-        model = "whisper-v3"
-        base_url = "https://audio-prod.us-virginia-1.direct.fireworks.ai"
-    else:
-        model = "whisper-v3-turbo"
-        base_url = "https://audio-turbo.us-virginia-1.direct.fireworks.ai"
-
-    logger.info(f"Using model: {model}")
-    client = AudioInference(
-        model=model,
-        base_url=base_url,
-        api_key=os.environ.get("FIREWORKS_API_KEY"),
+    mode = get_mode(context)
+    language_code = get_forced_language(context)
+    logger.info(
+        f"Processing voice note with mode={mode} "
+        f"language={language_code or 'auto-detect'}"
     )
 
-    # # Send to Beam API
-    # encode_audio = base64.b64encode(byte_data).decode("UTF-8")
-    with BytesIO(byte_data) as audio_stream:
-        response = await client.transcribe_async(
-            audio=audio_stream, language=context.user_data["language"]
-        )
-
-        transcript = response.text
-
-        do_clean_transcript = context.user_data.get("clean_transcript", False)
-        do_summarize = context.user_data.get("summarize_transcript", False)
-
-        if do_clean_transcript or do_summarize:
-
-            client = GeminiHelper(model_name="gemini-2.0-flash-001")
-            prompt = get_clean_prompt(transcript, do_summarize=do_summarize)
-
-            transcript = client(
-                prompt=prompt,
-                max_new_tokens=512,
+    gemini = get_gemini()
+    try:
+        if mode == MODE_SUMMARIZE:
+            language_name = (
+                LANGUAGE_CODE_TO_NAME[language_code] if language_code else None
             )
+            text = await asyncio.to_thread(
+                gemini.transcribe_and_summarize,
+                audio_bytes,
+                mime_type,
+                language_name,
+            )
+        else:
+            text = await asyncio.to_thread(
+                gemini.transcribe, audio_bytes, mime_type, language_code
+            )
+    except Exception:
+        logger.exception("Failed to process voice note")
+        text = None
 
-    # data = {
-    #     "audio_file": encode_audio,
-    #     "target_language": context.user_data["language"],
-    # }
-    # headers = {
-    #     "Accept": "*/*",
-    #     "Connection": "keep-alive",
-    #     "Content-Type": "application/json",
-    # }
-    # endpoint = (
-    #     beam_sm4t_endpoint
-    #     if user_model_choice == "SeamlessM4T"
-    #     else beam_whisper_endpoint
-    # )
-    # r = requests.post(
-    #     endpoint,
-    #     auth=HTTPBasicAuth(client_id, client_secret),
-    #     headers=headers,
-    #     json=data,
-    # )
-
-    # response = r.json()
-    # text_output = response.get("transcript", error_message)
-
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=transcript)
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id, text=text or error_message
+    )
 
 
-if __name__ == "__main__":
-    TOKEN = os.environ.get("TELEGRAM_TOKEN")
+def main():
+    token = os.environ.get("TELEGRAM_TOKEN")
     persistence_data = PicklePersistence(filepath="persistence.pkl")
 
     application = (
         ApplicationBuilder()
-        .token(TOKEN)
+        .token(token)
         .persistence(persistence=persistence_data)
         .build()
     )
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("mode", choose_mode))
     application.add_handler(CommandHandler("language", choose_language))
-    application.add_handler(CommandHandler("model", choose_model))
     application.add_handler(CommandHandler("config", show_config))
-    application.add_handler(CommandHandler("toggle_clean", toggle_clean_transcript))
+    application.add_handler(CallbackQueryHandler(mode_callback_query, pattern="^mode_"))
     application.add_handler(
-        CommandHandler("toggle_summary", toggle_summarize_transcript)
+        CallbackQueryHandler(language_callback_query, pattern="^language_")
     )
-    application.add_handler(
-        CallbackQueryHandler(language_callback_query, pattern="language")
-    )
-    application.add_handler(CallbackQueryHandler(model_callback_query, pattern="model"))
-    application.add_handler(MessageHandler(filters.ALL, get_audio_transcript))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     application.run_polling()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,30 +1,47 @@
 # speech-models-on-telegram
 
-Code for serving Meta's SeamlessM4T and OpenAI's Whisper via [Beam](https://www.beam.cloud/) and for running [Voice Bot](https://telegram.me/the_whisper_bot), a telegram bot to transform your voice notes into text.  
+A Telegram bot that turns voice notes into text, powered by Google's Gemini API. Send or forward a voice note and the bot will either transcribe it or summarize it. Voice notes can be in any language.
 
-### Components
+### Modes
 
-- A Beam [App](./src/app) to serve a serverless inference REST endpoint for speech models. Roughly, it receives a voice note's bytes and returns a transcript text.
-- A Python [Bot](./bot/) to let people send or forward voice notes and forward them in turn to the Beam App.
+- **Transcribe** (default): a clean, readable transcript. Uses `gemini-3.5-transcribe` in ["smart" mode](https://aistudio.google.com/docs/transcribe#transcription-modes), which removes filler words and false starts and adds punctuation and formatting.
+- **Summarize**: a concise summary of what was said, produced in a single pass by `gemini-3.8-flash` (no separate transcript step).
 
-The app does not log, save, preprocess, or post process any user data, except for each user's preference of preferred language and model.
+### Language
 
-### Models
+By default the bot does not set a language: the model detects it automatically, including code-switching. Use `/language` to force a specific language (the bot then passes it explicitly to the API).
 
-[SeamlessM4T](https://ai.meta.com/blog/seamless-m4t/) is a multilingual and multitask model that translates and transcribes across speech and text.
+### Commands
 
-[Whisper](https://github.com/openai/whisper) is a general-purpose speech recognition model. In this project, it is user for multilingual speech recognition and speech translation.
+- `/start` – show the welcome message and pick a mode
+- `/mode` – choose between Transcribe and Summarize
+- `/language` – choose a language, or keep auto-detect
+- `/config` – show the current mode and language
 
-**Useful Links**
+### Setup
 
-- SeamlessM4T Demo on HF: https://huggingface.co/spaces/facebook/seamless_m4t 
-- OpenAI's Whisper Demo on Beam: https://github.com/slai-labs/get-beam/blob/main/examples/whisper-tutorial/app.py
+Requires [uv](https://docs.astral.sh/uv/). Python 3.12 is pinned in `.python-version`.
 
-### Limitations
+```bash
+# Install dependencies and create the virtual environment
+uv sync
 
-- We trim voice notes to a maximum of 60 seconds for SeamlessM4T and 240 seconds for Whisper.
-- App gets suspended if not invoked for longer that 120 seconds. If that happens, then you'll cold start it and have to wait ~60 seconds to get your transcript.
-- This is a side project, so
-    - code is not nice and tidy
-    - I can't guarantee 24/7 assistance
-    - I can't guarantee it'll be up forever
+# Configure the bot
+cp .env.example .env
+# edit .env and set TELEGRAM_TOKEN and GOOGLE_API_KEY
+
+# Run the bot
+uv run voice-bot
+```
+
+Alternatively, run it as a module:
+
+```bash
+uv run python -m bot.bot
+```
+
+The project metadata and dependencies live in `pyproject.toml`; `uv.lock` pins the resolved versions.
+
+### Privacy
+
+The bot does not log, save, preprocess, or post-process any user data, except for each user's preferences (mode and language), which are persisted locally in `persistence.pkl`. Audio is sent to the Gemini API for processing.
